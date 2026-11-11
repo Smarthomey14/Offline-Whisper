@@ -1,42 +1,45 @@
 from pathlib import Path
-root=Path('whisper')
-cm=root/'CMakeLists.txt'
-t=cm.read_text()
-for line in ('    set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -pthread")\n','    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")\n'):
-    assert line in t, f'Upstream gewijzigd: {line}'
-    t=t.replace(line,'')
-cm.write_text(t)
-cm=root/'examples/whisper.wasm/CMakeLists.txt'
-t=cm.read_text()
-assert '-s USE_PTHREADS=1' in t
-cm.write_text(t.replace('-s USE_PTHREADS=1','-s USE_PTHREADS=0'))
-src=root/'examples/whisper.wasm/emscripten.cpp'
-t=src.read_text()
-assert 'std::thread g_worker;' in t
-t=t.replace('#include <thread>','').replace('std::thread g_worker;','')
-block='''        if (g_worker.joinable()) {
-  g_worker.join();
-        }
+import re
 
-'''
-assert t.count(block)==3
-t=t.replace(block,'')
-assert 'std::min(nthreads, std::min(16, mpow2(std::thread::hardware_concurrency())))' in t
-t=t.replace('std::min(nthreads, std::min(16, mpow2(std::thread::hardware_concurrency())))','1')
-t=t.replace('std::thread::hardware_concurrency()', '1')
-old='''            g_worker = std::thread([index, params, pcmf32 = std::move(pcmf32), is_multilingual]() {
-      whisper_reset_timings(g_contexts[index]);
-      whisper_full(g_contexts[index], params, pcmf32.data(), pcmf32.size());
-      whisper_print_timings(g_contexts[index]);
-      if (is_multilingual) {
-          free((void*)params.language);
-      }
-  });'''
-new='''            whisper_reset_timings(g_contexts[index]);
-  whisper_full(g_contexts[index], params, pcmf32.data(), pcmf32.size());
-  whisper_print_timings(g_contexts[index]);
-  if (is_multilingual) {
-      free((void*)params.language);
-  }'''
-assert old in t
-src.write_text(t.replace(old,new))
+root = Path("whisper")
+cmake = root / "CMakeLists.txt"
+text = cmake.read_text()
+text = re.sub(r'^\s*set\(CMAKE_C(?:XX)?_FLAGS[^\n]*-pthread[^\n]*\)\n', '\n', text, flags=re.M)
+cmake.write_text(text)
+
+wasm_cmake = root / "examples/whisper.wasm/CMakeLists.txt"
+text = wasm_cmake.read_text()
+if "-s USE_PTHREADS=1" not in text:
+    raise RuntimeError("Whisper WASM pthread optie ontbreekt of is gewijzigd")
+wasm_cmake.write_text(text.replace("-s USE_PTHREADS=1", "-s USE_PTHREADS=0"))
+
+source = root / "examples/whisper.wasm/emscripten.cpp"
+text = source.read_text()
+if "std::thread g_worker;" not in text:
+    raise RuntimeError("Whisper worker definitie gewijzigd")
+text = text.replace("#include <thread>", "")
+text = text.replace("std::thread g_worker;", "")
+text, count = re.subn(r'\s*if \(g_worker\.joinable\(\)\) \{\s*g_worker\.join\(\);\s*\}', '', text)
+if count != 3:
+    raise RuntimeError(f"Verwacht 3 join-blokken; gevonden {count}")
+text = text.replace("std::min(nthreads, std::min(16, mpow2(std::thread::hardware_concurrency())))", "1")
+text = text.replace("std::thread::hardware_concurrency()", "1")
+old = """g_worker = std::thread([index, params, pcmf32 = std::move(pcmf32), is_multilingual]() {
+                whisper_reset_timings(g_contexts[index]);
+                whisper_full(g_contexts[index], params, pcmf32.data(), pcmf32.size());
+                whisper_print_timings(g_contexts[index]);
+                if (is_multilingual) {
+                    free((void*)params.language);
+                }
+            });"""
+new = """whisper_reset_timings(g_contexts[index]);
+            whisper_full(g_contexts[index], params, pcmf32.data(), pcmf32.size());
+            whisper_print_timings(g_contexts[index]);
+            if (is_multilingual) {
+                free((void*)params.language);
+            }"""
+if old not in text:
+    raise RuntimeError("Whisper worker implementatie gewijzigd")
+text = text.replace(old, new)
+source.write_text(text)
+print("Whisper single-thread patch toegepast")
