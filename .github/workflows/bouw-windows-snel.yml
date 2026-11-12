@@ -1,0 +1,32 @@
+name: Bouw snelle Whisper Windows-engine
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    steps:
+      - name: Broncode van whisper.cpp ophalen
+        shell: pwsh
+        run: git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git whisper
+      - name: Compileren met MSVC CPU-optimalisatie
+        shell: pwsh
+        run: |
+          cmake -S whisper -B build -A x64 -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DGGML_OPENCL=OFF -DGGML_NATIVE=OFF
+          cmake --build build --config Release --target whisper-cli --parallel 4
+      - name: Uitvoerbestanden verzamelen
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          $exe = Get-ChildItem -Path build -Recurse -Filter whisper-cli.exe | Select-Object -First 1
+          if (!$exe) { throw 'whisper-cli.exe niet gevonden' }
+          Copy-Item $exe.FullName package/whisper-cli.exe
+          Get-ChildItem -Path build -Recurse -Filter '*.dll' | ForEach-Object { Copy-Item $_.FullName -Destination package -Force }
+          if (!(Test-Path package/whisper-cli.exe)) { throw 'Geen uitvoerbestand' }
+          Get-ChildItem package | Select-Object Name,Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisper-windows-snel
+          path: package/*
+          if-no-files-found: error
